@@ -41,6 +41,7 @@ import ch.qos.ketem.core.SourceTreeObfuscator;
 public class ObfuscateMojo extends AbstractMojo {
 
     private static final LanguageLevel DEFAULT_LANGUAGE_LEVEL = LanguageLevel.JAVA_21;
+    private static final int WEAK_SALT_MAX_LENGTH = 4;
 
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
@@ -84,9 +85,13 @@ public class ObfuscateMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.build.directory}/ketem/src", required = true)
     private File outputDirectory;
 
-    /** Original identifiers that were renamed; combine with the salt to retrace. */
+    /**
+     * Original identifiers that were renamed; combine with the salt to retrace.
+     * Written outside {@code target/} so that {@code mvn clean} keeps it. It must
+     * not be published or committed: add {@code private/} to your VCS ignore list.
+     */
     @Parameter(property = "ketem.dictionaryFile",
-            defaultValue = "${project.build.directory}/ketem/ketem-identifiers.txt", required = true)
+            defaultValue = "${project.basedir}/private/ketem-identifiers-${project.version}.txt", required = true)
     private File dictionaryFile;
 
     @Parameter(defaultValue = "${project.build.sourceEncoding}")
@@ -107,6 +112,10 @@ public class ObfuscateMojo extends AbstractMojo {
             hasher = new IdentifierHasher(salt, hashLength);
         } catch (IllegalArgumentException e) {
             throw new MojoFailureException(e.getMessage());
+        }
+        if (salt.codePointCount(0, salt.length()) <= WEAK_SALT_MAX_LENGTH) {
+            getLog().warn("The Ketem salt is " + WEAK_SALT_MAX_LENGTH + " characters or less, which offers "
+                    + "little protection. Use a long random value kept in a secret store.");
         }
         Charset charset = encoding == null || encoding.isEmpty() ? Charset.defaultCharset() : Charset.forName(encoding);
 

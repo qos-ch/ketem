@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Tells Eclipse m2e not to run ketem:obfuscate during incremental IDE builds,
+  so the IDE keeps compiling the original sources. Command line builds are
+  unaffected.
+-->
+<lifecycleMappingMetadata>
+  <pluginExecutions>
+    <pluginExecution>
+      <pluginExecutionFilter>
+        <goals>
+          <goal>obfuscate</goal>
+        </goals>
+      </pluginExecutionFilter>
+      <action>
+        <ignore />
+      </action>
+    </pluginExecution>
+  </pluginExecutions>
+</lifecycleMappingMetadata>

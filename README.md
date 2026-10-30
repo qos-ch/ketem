@@ -55,16 +55,47 @@ with `-Dketem.salt=...` (or a `settings.xml` profile) instead of committing it.
 
 `obfuscate` runs in `process-sources`. It writes all compile source roots to
 `target/ketem/src` (the selected files obfuscated, everything else copied as-is) and
-compiles from there. It also writes `target/ketem/ketem-identifiers.txt`, which
-lists the renamed original identifiers but not the salt. Keep that file with your
-release artifacts.
+compiles from there. It also writes `private/ketem-identifiers-<version>.txt` in
+the module's directory, listing the renamed original identifiers (but not the
+salt). It lives outside `target/` so `mvn clean` keeps it. To write it
+elsewhere, set `dictionaryFile` (or `-Dketem.dictionaryFile=...`).
+
+In Eclipse, the plugin ships `META-INF/m2e/lifecycle-mapping-metadata.xml`,
+which tells m2e to skip `obfuscate`, so the IDE builds and debugs against the
+original sources without any extra configuration.
+
+### Keep `private/` out of version control and releases
+
+The dictionary lists every original private identifier, which reveals much of
+what the obfuscated code does. Store it somewhere private (a secret store, or a
+private CI artifact keyed by version), never in a public repository or alongside
+deployed artifacts.
+
+Ketem does not enforce this: it never edits ignore files. Add the folder to
+your `.gitignore` yourself. For a single module, put this in the module's
+`.gitignore`:
+
+```gitignore
+private/
+```
+
+In a multi-module build, one entry in the root `.gitignore` covers every module,
+since a pattern without a leading slash matches at any depth:
+
+```gitignore
+# Ketem identifier dictionaries (see ketem README)
+private/
+```
+
+If you changed `dictionaryFile`, ignore that location instead. To check that
+the rule works, run `git check-ignore -v private/ketem-identifiers-1.0.txt`.
 
 | Parameter | Property | Default |
 |---|---|---|
 | `salt` | `ketem.salt` | required |
 | `hashLength` | `ketem.hashLength` | 12 (6–32) |
 | `languageLevel` | `ketem.languageLevel` | from `maven.compiler.release`, else `maven.compiler.source`, else `JAVA_21` |
-| `dictionaryFile` | `ketem.dictionaryFile` | `target/ketem/ketem-identifiers.txt` |
+| `dictionaryFile` | `ketem.dictionaryFile` | `${project.basedir}/private/ketem-identifiers-${project.version}.txt` |
 | `outputDirectory` | | `target/ketem/src` |
 | `skip` | `ketem.skip` | false |
 
@@ -72,13 +103,13 @@ release artifacts.
 
 ```sh
 # CLI (salt from --salt or $KETEM_SALT; trace from file or stdin)
-java -jar ketem-core-0.1.0-SNAPSHOT-retrace.jar --salt S --identifiers ketem-identifiers.txt crash.txt
+java -jar ketem-core-0.1.0-SNAPSHOT-retrace.jar --salt S --identifiers private/ketem-identifiers-1.0.txt crash.txt
 
 # No dictionary? Harvest identifiers from the original sources instead
 java -jar ketem-core-0.1.0-SNAPSHOT-retrace.jar --salt S --sources src/main/java < crash.txt
 
 # HTTP service: POST /retrace with the trace as body; GET / serves a paste form
-java -jar ketem-core-0.1.0-SNAPSHOT-retrace.jar --salt S --identifiers ketem-identifiers.txt --serve 8080
+java -jar ketem-core-0.1.0-SNAPSHOT-retrace.jar --salt S --identifiers private/ketem-identifiers-1.0.txt --serve 8080
 curl --data-binary @crash.txt http://127.0.0.1:8080/retrace
 
 # Maven

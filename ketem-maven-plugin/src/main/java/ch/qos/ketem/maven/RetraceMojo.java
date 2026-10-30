@@ -29,7 +29,7 @@ public class RetraceMojo extends AbstractMojo {
     private int hashLength;
 
     @Parameter(property = "ketem.dictionaryFile",
-            defaultValue = "${project.build.directory}/ketem/ketem-identifiers.txt", required = true)
+            defaultValue = "${project.basedir}/private/ketem-identifiers-${project.version}.txt", required = true)
     private File dictionaryFile;
 
     /** File containing the obfuscated stack trace. */
