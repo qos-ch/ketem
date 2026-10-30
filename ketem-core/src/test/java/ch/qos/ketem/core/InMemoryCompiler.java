@@ -1,0 +1,65 @@
+package ch.qos.ketem.core;
+
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.io.StringWriter;
+import java.net.URI;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import javax.tools.FileObject;
+import javax.tools.ForwardingJavaFileManager;
+import javax.tools.JavaCompiler;
+import javax.tools.JavaFileManager;
+import javax.tools.JavaFileObject;
+import javax.tools.SimpleJavaFileObject;
+import javax.tools.ToolProvider;
+
+/** Compiles a single source file in memory and loads the resulting classes. */
+final class InMemoryCompiler {
+
+    private InMemoryCompiler() {
+    }
+
+    static ClassLoader compile(String className, String source) {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        Map<String, ByteArrayOutputStream> classes = new HashMap<>();
+        JavaFileObject file = new SimpleJavaFileObject(
+                URI.create("string:///" + className.replace('.', '/') + ".java"), JavaFileObject.Kind.SOURCE) {
+            @Override
+            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+                return source;
+            }
+        };
+        JavaFileManager fm = new ForwardingJavaFileManager<JavaFileManager>(
+                compiler.getStandardFileManager(null, null, null)) {
+            @Override
+            public JavaFileObject getJavaFileForOutput(Location location, String name, JavaFileObject.Kind kind,
+                    FileObject sibling) {
+                return new SimpleJavaFileObject(URI.create("mem:///" + name + ".class"), kind) {
+                    @Override
+                    public OutputStream openOutputStream() {
+                        return classes.computeIfAbsent(name, k -> new ByteArrayOutputStream());
+                    }
+                };
+            }
+        };
+        StringWriter errors = new StringWriter();
+        boolean ok = compiler.getTask(errors, fm, null, List.of("--release", "21", "-g"), null, List.of(file)).call();
+        if (!ok) {
+            throw new AssertionError("Compilation of " + className + " failed:\n" + errors + "\n--- source ---\n" + source);
+        }
+        return new ClassLoader(InMemoryCompiler.class.getClassLoader()) {
+            @Override
+            protected Class<?> findClass(String name) throws ClassNotFoundException {
+                ByteArrayOutputStream b = classes.get(name);
+                if (b == null) {
+                    throw new ClassNotFoundException(name);
+                }
+                byte[] bytes = b.toByteArray();
+                return defineClass(name, bytes, 0, bytes.length);
+            }
+        };
+    }
+}
