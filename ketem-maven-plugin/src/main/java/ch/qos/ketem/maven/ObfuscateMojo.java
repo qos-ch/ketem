@@ -121,10 +121,12 @@ public class ObfuscateMojo extends AbstractMojo {
 
         Path out = outputDirectory.toPath().toAbsolutePath().normalize();
         List<Path> roots = new ArrayList<>();
+        List<String> originalRoots = new ArrayList<>();
         for (String r : project.getCompileSourceRoots()) {
             Path p = new File(r).toPath().toAbsolutePath().normalize();
             if (!p.equals(out)) {
                 roots.add(p);
+                originalRoots.add(r);
             }
         }
 
@@ -141,14 +143,24 @@ public class ObfuscateMojo extends AbstractMojo {
             throw new MojoExecutionException("Obfuscation failed", e);
         }
 
-        // Maven 3 exposes the live list; replace the original roots by the obfuscated one.
-        project.getCompileSourceRoots().clear();
-        project.addCompileSourceRoot(out.toString());
+        replaceCompileSourceRoots(originalRoots, out.toString());
 
         getLog().info("Ketem obfuscated " + tree.getObfuscatedCount() + " file(s), copied "
                 + tree.getCopiedCount() + " other file(s), renamed "
                 + obfuscator.getRenamedIdentifiers().size() + " distinct identifier(s)");
         getLog().info("Identifier dictionary: " + dictionaryFile);
+    }
+
+    /**
+     * Swaps the original source roots for the obfuscated one. Maven 4 returns a
+     * read-only list from {@code getCompileSourceRoots()}, so roots are removed
+     * through {@code removeCompileSourceRoot}, available since Maven 3.9.10.
+     */
+    private void replaceCompileSourceRoots(List<String> originalRoots, String obfuscatedRoot) {
+        for (String r : originalRoots) {
+            project.removeCompileSourceRoot(r);
+        }
+        project.addCompileSourceRoot(obfuscatedRoot);
     }
 
     private LanguageLevel resolveLanguageLevel() throws MojoFailureException {

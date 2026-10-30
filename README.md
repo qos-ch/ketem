@@ -33,6 +33,8 @@ same goes for names used reflectively (e.g. JUnit `@MethodSource("name")`).
 
 ## Maven usage
 
+Requires Maven 3.9.10 or later (including Maven 4).
+
 ```xml
 <plugin>
   <groupId>ch.qos.ketem</groupId>

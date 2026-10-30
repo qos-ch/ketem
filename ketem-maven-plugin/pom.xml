@@ -16,7 +16,7 @@
   <description>Obfuscates Java sources during the build.</description>
 
   <prerequisites>
-    <maven>3.6.3</maven>
+    <maven>3.9.10</maven>
   </prerequisites>
 
   <dependencies>

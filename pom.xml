@@ -21,7 +21,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>11</maven.compiler.release>
     <javaparser.version>3.28.2</javaparser.version>
-    <maven.version>3.9.9</maven.version>
+    <maven.version>3.9.16</maven.version>
     <maven-plugin-tools.version>3.15.1</maven-plugin-tools.version>
     <junit.version>5.11.4</junit.version>
   </properties>
