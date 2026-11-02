@@ -6,6 +6,9 @@ import java.util.List;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+/**
+ * Sample used by the obfuscation tests.
+ */
 public class Inventory implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -139,6 +142,11 @@ public class Inventory implements Serializable {
         recurse(depth);
     }
 
+    /**
+     * Recurses down to zero, then fails.
+     *
+     * @param remaining depth left
+     */
     private void recurse(int remaining) {
         if (remaining == 0) {
             items.forEach(item -> failWith(item));

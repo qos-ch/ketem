@@ -82,6 +82,18 @@ public class ObfuscateMojo extends AbstractMojo {
     @Parameter
     private List<String> classNameExcludes;
 
+    /**
+     * Remove Javadoc comments from obfuscated files. Comments before the
+     * package declaration (e.g. a license header) are kept, and the removed
+     * comments' line breaks stay in place so line numbers do not change.
+     */
+    @Parameter(property = "ketem.stripJavadoc", defaultValue = "false")
+    private boolean stripJavadoc;
+
+    /** Like {@code stripJavadoc}, but removes all comments. */
+    @Parameter(property = "ketem.stripComments", defaultValue = "false")
+    private boolean stripComments;
+
     /** Identifiers that must never be renamed, e.g. names used reflectively. */
     @Parameter
     private List<String> excludedIdentifiers;
@@ -147,6 +159,8 @@ public class ObfuscateMojo extends AbstractMojo {
         }
 
         Obfuscator obfuscator = new Obfuscator(hasher, excludedIdentifiers, level);
+        obfuscator.setStripJavadoc(stripJavadoc);
+        obfuscator.setStripComments(stripComments);
         SourceTreeObfuscator tree = new SourceTreeObfuscator(obfuscator,
                 new SourceSelector(packages, classes, excludes), charset);
         if (renamePackagePrivateClasses) {

@@ -1,5 +1,6 @@
 package ch.qos.ketem.core;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -9,9 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
@@ -37,6 +38,8 @@ import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.comments.Comment;
+import com.github.javaparser.ast.comments.JavadocComment;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
@@ -80,6 +83,9 @@ import com.github.javaparser.ast.type.ClassOrInterfaceType;
  * from an external supertype with the same simple name as a private member of
  * the enclosing class. Add such names to the excluded identifiers.
  *
+ * <p>Optionally, Javadoc or all comments are removed (keeping a header before
+ * the package declaration), leaving their line breaks in place.
+ *
  * <p>Optionally, package-private top-level classes are renamed too; see
  * {@link ClassRenamePlanner} for how they are chosen.
  *
@@ -102,6 +108,8 @@ public final class Obfuscator {
     private final Set<String> excluded;
     private final JavaParser parser;
     private final Map<String, String> obfuscatedToOriginal = new HashMap<>();
+    private boolean stripJavadoc;
+    private boolean stripComments;
 
     public Obfuscator(IdentifierHasher hasher) {
         this(hasher, Collections.emptySet(), LanguageLevel.JAVA_21);
@@ -115,6 +123,16 @@ public final class Obfuscator {
         }
         // Tab size 1 makes parser columns equal to character offsets within a line.
         this.parser = new JavaParser(new ParserConfiguration().setLanguageLevel(languageLevel).setTabSize(1));
+    }
+
+    /** Removes Javadoc comments, except those before the package declaration. */
+    public void setStripJavadoc(boolean stripJavadoc) {
+        this.stripJavadoc = stripJavadoc;
+    }
+
+    /** Removes all comments, except those before the package declaration. */
+    public void setStripComments(boolean stripComments) {
+        this.stripComments = stripComments;
     }
 
     public JavaParser getParser() {
@@ -152,7 +170,37 @@ public final class Obfuscator {
             throw new ObfuscationException("Failed to parse " + origin + ":\n" + problems);
         }
         CompilationUnit cu = result.getResult().get();
-        return new Pass(cu, plan.namesFor(ClassRenamePlanner.packageOf(cu))).run(source, origin);
+        List<Comment> comments = commentsToStrip(result, cu);
+        return new Pass(cu, plan.namesFor(ClassRenamePlanner.packageOf(cu))).run(source, origin, comments);
+    }
+
+    /**
+     * Comments before the package declaration (typically a license header) are
+     * always kept. Files in the default package have no package line; there,
+     * comments before the first import or type are kept.
+     */
+    private List<Comment> commentsToStrip(ParseResult<CompilationUnit> result, CompilationUnit cu) {
+        if (!stripJavadoc && !stripComments) {
+            return Collections.emptyList();
+        }
+        Optional<Position> header = cu.getPackageDeclaration().flatMap(Node::getBegin);
+        if (header.isEmpty()) {
+            header = Stream.concat(cu.getImports().stream(), cu.getTypes().stream())
+                    .map(Node::getBegin).flatMap(Optional::stream).min(Position::compareTo);
+        }
+        List<Comment> strip = new ArrayList<>();
+        for (Comment c : result.getCommentsCollection().map(cc -> cc.getComments())
+                .orElseGet(TreeSet::new)) {
+            if (!stripComments && !(c instanceof JavadocComment)) {
+                continue;
+            }
+            Optional<Position> end = c.getEnd();
+            if (end.isEmpty() || (header.isPresent() && end.get().isBefore(header.get()))) {
+                continue;
+            }
+            strip.add(c);
+        }
+        return strip;
     }
 
     private String rename(String original) {
@@ -192,22 +240,28 @@ public final class Obfuscator {
     }
 
     /**
-     * Collects identifier replacements by source position and applies them to
-     * the original text. Each replacement targets the last {@code identifier}
-     * characters of a node's range, and checks that they really spell the
-     * identifier before replacing them.
+     * Collects edits by source position and applies them to the original text.
+     *
+     * <p>An identifier edit targets the last {@code identifier} characters of a
+     * node's range, and checks that they really spell the identifier.
+     *
+     * <p>A removed comment is replaced by the line breaks it contained, so line
+     * numbers do not change. Horizontal whitespace next to it is removed as
+     * well, so that no trailing blanks are left behind; a single space is kept
+     * if the comment separated two tokens on the same line.
      */
     private final class SourceEditor {
 
         private final String source;
         private final String origin;
         private final int[] lineStarts;
-        private final Map<Integer, String[]> edits = new TreeMap<>(Collections.reverseOrder());
+        private final List<Edit> identifierEdits = new ArrayList<>();
+        private final List<int[]> commentSpans = new ArrayList<>();
 
         SourceEditor(String source, String origin) {
             this.source = source;
             this.origin = origin;
-            List<Integer> starts = new java.util.ArrayList<>();
+            List<Integer> starts = new ArrayList<>();
             starts.add(0);
             for (int i = 0; i < source.length(); i++) {
                 char c = source.charAt(i);
@@ -221,22 +275,98 @@ public final class Obfuscator {
         void replaceIdentifierAt(Node node, String identifier) {
             Position end = node.getEnd().orElseThrow(() ->
                     new ObfuscationException("No source position for '" + identifier + "' in " + origin));
-            int endOffset = lineStarts[end.line - 1] + end.column; // exclusive
+            int endOffset = offset(end) + 1;
             int start = endOffset - identifier.length();
             if (start < 0 || !source.startsWith(identifier, start)) {
                 throw new ObfuscationException("Cannot locate '" + identifier + "' at line " + end.line + " in "
                         + origin + "; the file may use Unicode escapes in identifiers");
             }
-            edits.put(start, new String[] {identifier, rename(identifier)});
+            identifierEdits.add(new Edit(start, endOffset, rename(identifier)));
+        }
+
+        void removeComment(Comment comment) {
+            int start = offset(comment.getBegin().get());
+            int end = offset(comment.getEnd().get()) + 1;
+            if (start < 0 || end > source.length() || source.charAt(start) != '/') {
+                throw new ObfuscationException("Cannot locate a comment at line " + comment.getBegin().get().line
+                        + " in " + origin);
+            }
+            commentSpans.add(new int[] {start, end});
         }
 
         String apply() {
+            List<Edit> edits = new java.util.ArrayList<>(identifierEdits);
+            edits.addAll(commentEdits());
+            edits.sort((a, b) -> Integer.compare(b.start, a.start));
             StringBuilder sb = new StringBuilder(source);
-            for (Map.Entry<Integer, String[]> e : edits.entrySet()) {
-                int start = e.getKey();
-                sb.replace(start, start + e.getValue()[0].length(), e.getValue()[1]);
+            for (Edit e : edits) {
+                sb.replace(e.start, e.end, e.text);
             }
             return sb.toString();
+        }
+
+        private List<Edit> commentEdits() {
+            commentSpans.sort((a, b) -> Integer.compare(a[0], b[0]));
+            List<int[]> merged = new ArrayList<>();
+            for (int[] span : commentSpans) {
+                int e = span[1];
+                while (e < source.length() && isBlank(source.charAt(e))) {
+                    e++;
+                }
+                int[] last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
+                if (last != null && span[0] <= last[1]) {
+                    last[1] = Math.max(last[1], e);
+                } else {
+                    merged.add(new int[] {span[0], e});
+                }
+            }
+            List<Edit> edits = new ArrayList<>();
+            for (int[] span : merged) {
+                // Nothing but blanks left after the comment(s): drop the indentation too.
+                if (span[1] == source.length() || isLineBreak(source.charAt(span[1]))) {
+                    while (span[0] > 0 && isBlank(source.charAt(span[0] - 1))) {
+                        span[0]--;
+                    }
+                }
+                StringBuilder breaks = new StringBuilder();
+                for (int i = span[0]; i < span[1]; i++) {
+                    if (isLineBreak(source.charAt(i))) {
+                        breaks.append(source.charAt(i));
+                    }
+                }
+                String text = breaks.toString();
+                if (text.isEmpty() && span[0] > 0 && span[1] < source.length()
+                        && !Character.isWhitespace(source.charAt(span[0] - 1))
+                        && !Character.isWhitespace(source.charAt(span[1]))) {
+                    text = " "; // e.g. int/*c*/x must not become intx
+                }
+                edits.add(new Edit(span[0], span[1], text));
+            }
+            return edits;
+        }
+
+        private int offset(Position p) {
+            return lineStarts[p.line - 1] + p.column - 1;
+        }
+
+        private boolean isBlank(char c) {
+            return c == ' ' || c == '\t' || c == '\f';
+        }
+
+        private boolean isLineBreak(char c) {
+            return c == '\n' || c == '\r';
+        }
+    }
+
+    private static final class Edit {
+        final int start;
+        final int end;
+        final String text;
+
+        Edit(int start, int end, String text) {
+            this.start = start;
+            this.end = end;
+            this.text = text;
         }
     }
 
@@ -260,9 +390,9 @@ public final class Obfuscator {
             this.classNames = classNames;
         }
 
-        String run(String source, String origin) {
+        String run(String source, String origin, List<Comment> commentsToStrip) {
             for (TypeDeclaration<?> t : cu.findAll(TypeDeclaration.class)) {
-                typesBySimpleName.computeIfAbsent(t.getNameAsString(), k -> new java.util.ArrayList<>()).add(t);
+                typesBySimpleName.computeIfAbsent(t.getNameAsString(), k -> new ArrayList<>()).add(t);
             }
             collectUnsafeNames();
             collectDeclarations();
@@ -280,6 +410,9 @@ public final class Obfuscator {
             }
             for (Name n : qualifiedNamesToRename) {
                 editor.replaceIdentifierAt(n, n.getIdentifier());
+            }
+            for (Comment c : commentsToStrip) {
+                editor.removeComment(c);
             }
             return editor.apply();
         }
