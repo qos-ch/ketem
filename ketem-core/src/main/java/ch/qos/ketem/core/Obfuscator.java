@@ -39,7 +39,6 @@ import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.comments.Comment;
-import com.github.javaparser.ast.comments.JavadocComment;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
@@ -83,8 +82,8 @@ import com.github.javaparser.ast.type.ClassOrInterfaceType;
  * from an external supertype with the same simple name as a private member of
  * the enclosing class. Add such names to the excluded identifiers.
  *
- * <p>Optionally, Javadoc or all comments are removed (keeping a header before
- * the package declaration), leaving their line breaks in place.
+ * <p>Optionally, all comments, Javadoc included, are removed (keeping a header
+ * before the package declaration), leaving their line breaks in place.
  *
  * <p>Optionally, package-private top-level classes are renamed too; see
  * {@link ClassRenamePlanner} for how they are chosen.
@@ -108,7 +107,6 @@ public final class Obfuscator {
     private final Set<String> excluded;
     private final JavaParser parser;
     private final Map<String, String> obfuscatedToOriginal = new HashMap<>();
-    private boolean stripJavadoc;
     private boolean stripComments;
 
     public Obfuscator(IdentifierHasher hasher) {
@@ -125,14 +123,16 @@ public final class Obfuscator {
         this.parser = new JavaParser(new ParserConfiguration().setLanguageLevel(languageLevel).setTabSize(1));
     }
 
-    /** Removes Javadoc comments, except those before the package declaration. */
-    public void setStripJavadoc(boolean stripJavadoc) {
-        this.stripJavadoc = stripJavadoc;
-    }
-
-    /** Removes all comments, except those before the package declaration. */
+    /**
+     * Removes all comments, Javadoc included, except those before the package
+     * declaration.
+     */
     public void setStripComments(boolean stripComments) {
         this.stripComments = stripComments;
+    }
+
+    public boolean isStripComments() {
+        return stripComments;
     }
 
     public JavaParser getParser() {
@@ -163,15 +163,33 @@ public final class Obfuscator {
      *             the whole source tree
      */
     public String obfuscate(String source, String origin, ClassRenamePlan plan) {
+        ParseResult<CompilationUnit> result = parse(source, origin);
+        CompilationUnit cu = result.getResult().get();
+        List<Comment> comments = commentsToStrip(result, cu);
+        return new Pass(cu, plan.namesFor(ClassRenamePlanner.packageOf(cu))).run(source, origin, comments);
+    }
+
+    /**
+     * Removes comments, if enabled, without renaming anything. Used for files
+     * excluded from obfuscation that should still lose their comments.
+     */
+    public String stripCommentsOnly(String source, String origin) {
+        ParseResult<CompilationUnit> result = parse(source, origin);
+        SourceEditor editor = new SourceEditor(source, origin);
+        for (Comment c : commentsToStrip(result, result.getResult().get())) {
+            editor.removeComment(c);
+        }
+        return editor.apply();
+    }
+
+    private ParseResult<CompilationUnit> parse(String source, String origin) {
         ParseResult<CompilationUnit> result = parser.parse(source);
         if (!result.isSuccessful() || result.getResult().isEmpty()) {
             String problems = result.getProblems().stream().map(Problem::getVerboseMessage)
                     .collect(Collectors.joining("\n"));
             throw new ObfuscationException("Failed to parse " + origin + ":\n" + problems);
         }
-        CompilationUnit cu = result.getResult().get();
-        List<Comment> comments = commentsToStrip(result, cu);
-        return new Pass(cu, plan.namesFor(ClassRenamePlanner.packageOf(cu))).run(source, origin, comments);
+        return result;
     }
 
     /**
@@ -180,7 +198,7 @@ public final class Obfuscator {
      * comments before the first import or type are kept.
      */
     private List<Comment> commentsToStrip(ParseResult<CompilationUnit> result, CompilationUnit cu) {
-        if (!stripJavadoc && !stripComments) {
+        if (!stripComments) {
             return Collections.emptyList();
         }
         Optional<Position> header = cu.getPackageDeclaration().flatMap(Node::getBegin);
@@ -191,9 +209,6 @@ public final class Obfuscator {
         List<Comment> strip = new ArrayList<>();
         for (Comment c : result.getCommentsCollection().map(cc -> cc.getComments())
                 .orElseGet(TreeSet::new)) {
-            if (!stripComments && !(c instanceof JavadocComment)) {
-                continue;
-            }
             Optional<Position> end = c.getEnd();
             if (end.isEmpty() || (header.isPresent() && end.get().isBefore(header.get()))) {
                 continue;

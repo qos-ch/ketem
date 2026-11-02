@@ -28,6 +28,7 @@ import ch.qos.ketem.core.ObfuscationException;
 import ch.qos.ketem.core.Obfuscator;
 import ch.qos.ketem.core.SourceSelector;
 import ch.qos.ketem.core.SourceTreeObfuscator;
+import ch.qos.ketem.core.StripScope;
 
 /**
  * Obfuscates the project's main sources into {@code outputDirectory} and
@@ -83,16 +84,21 @@ public class ObfuscateMojo extends AbstractMojo {
     private List<String> classNameExcludes;
 
     /**
-     * Remove Javadoc comments from obfuscated files. Comments before the
-     * package declaration (e.g. a license header) are kept, and the removed
-     * comments' line breaks stay in place so line numbers do not change.
+     * Remove all comments, Javadoc included. Comments before the package
+     * declaration (e.g. a license header) are kept, and the removed comments'
+     * line breaks stay in place so line numbers do not change.
      */
-    @Parameter(property = "ketem.stripJavadoc", defaultValue = "false")
-    private boolean stripJavadoc;
+    @Parameter(property = "ketem.stripJavadocsAndComments", defaultValue = "false")
+    private boolean stripJavadocsAndComments;
 
-    /** Like {@code stripJavadoc}, but removes all comments. */
-    @Parameter(property = "ketem.stripComments", defaultValue = "false")
-    private boolean stripComments;
+    /**
+     * Which files {@code stripJavadocsAndComments} applies to: {@code obfuscated}
+     * (only obfuscated files) or {@code packages} (every file matching
+     * {@code packages}/{@code classes}, including excluded ones, which keep
+     * their identifiers).
+     */
+    @Parameter(property = "ketem.stripScope", defaultValue = "obfuscated")
+    private String stripScope;
 
     /** Identifiers that must never be renamed, e.g. names used reflectively. */
     @Parameter
@@ -159,10 +165,14 @@ public class ObfuscateMojo extends AbstractMojo {
         }
 
         Obfuscator obfuscator = new Obfuscator(hasher, excludedIdentifiers, level);
-        obfuscator.setStripJavadoc(stripJavadoc);
-        obfuscator.setStripComments(stripComments);
+        obfuscator.setStripComments(stripJavadocsAndComments);
         SourceTreeObfuscator tree = new SourceTreeObfuscator(obfuscator,
                 new SourceSelector(packages, classes, excludes), charset);
+        try {
+            tree.setStripScope(StripScope.valueOf(stripScope.trim().toUpperCase(Locale.ROOT)));
+        } catch (IllegalArgumentException e) {
+            throw new MojoFailureException("Unknown stripScope '" + stripScope + "'; use obfuscated or packages");
+        }
         if (renamePackagePrivateClasses) {
             List<Path> testRoots = new ArrayList<>();
             for (String r : project.getTestCompileSourceRoots()) {
@@ -185,6 +195,10 @@ public class ObfuscateMojo extends AbstractMojo {
         getLog().info("Ketem obfuscated " + tree.getObfuscatedCount() + " file(s), copied "
                 + tree.getCopiedCount() + " other file(s), renamed "
                 + obfuscator.getRenamedIdentifiers().size() + " distinct identifier(s)");
+        if (tree.getStrippedOnlyCount() > 0) {
+            getLog().info("Removed comments from " + tree.getStrippedOnlyCount()
+                    + " excluded file(s) without obfuscating them");
+        }
         if (renamePackagePrivateClasses) {
             getLog().info("Renamed " + tree.getClassRenamePlan().renamedCount() + " package-private class(es)");
             tree.getClassRenamePlan().getSkipped().forEach(

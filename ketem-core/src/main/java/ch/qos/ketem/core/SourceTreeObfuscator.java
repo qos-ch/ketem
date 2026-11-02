@@ -19,7 +19,9 @@ import java.util.stream.Stream;
 
 /**
  * Copies one or more source roots into an output directory, obfuscating the
- * selected {@code .java} files and copying everything else verbatim.
+ * selected {@code .java} files and copying everything else verbatim, except
+ * that with {@link StripScope#PACKAGES} excluded files in the designated
+ * packages still lose their comments.
  */
 public final class SourceTreeObfuscator {
 
@@ -31,9 +33,11 @@ public final class SourceTreeObfuscator {
     private SourceSelector classNameFilter = SourceSelector.all();
     private List<Path> referenceRoots = new ArrayList<>();
     private ClassRenamePlan classRenamePlan = ClassRenamePlan.NONE;
+    private StripScope stripScope = StripScope.OBFUSCATED;
 
     private int obfuscatedCount;
     private int copiedCount;
+    private int strippedOnlyCount;
 
     public SourceTreeObfuscator(Obfuscator obfuscator, SourceSelector selector, Charset encoding) {
         this.obfuscator = obfuscator;
@@ -54,6 +58,11 @@ public final class SourceTreeObfuscator {
         this.renamePackagePrivateClasses = true;
         this.classNameFilter = new SourceSelector(null, null, classNameExcludes);
         this.referenceRoots = new ArrayList<>(referenceRoots);
+    }
+
+    /** Which files lose their comments when the obfuscator strips comments. */
+    public void setStripScope(StripScope stripScope) {
+        this.stripScope = stripScope;
     }
 
     public void process(List<Path> sourceRoots, Path outputDir) throws IOException {
@@ -106,11 +115,21 @@ public final class SourceTreeObfuscator {
                 String source = new String(Files.readAllBytes(file), encoding);
                 Files.write(target, obfuscator.obfuscate(source, file.toString(), classRenamePlan).getBytes(encoding));
                 obfuscatedCount++;
+            } else if (stripOnly(rel)) {
+                String source = new String(Files.readAllBytes(file), encoding);
+                Files.write(target, obfuscator.stripCommentsOnly(source, file.toString()).getBytes(encoding));
+                strippedOnlyCount++;
             } else {
                 Files.copy(file, target, StandardCopyOption.REPLACE_EXISTING);
                 copiedCount++;
             }
         }
+    }
+
+    /** Excluded from obfuscation, but in scope for comment removal. */
+    private boolean stripOnly(Path rel) {
+        return obfuscator.isStripComments() && stripScope == StripScope.PACKAGES && isJava(rel)
+                && selector.isDesignated(fqcnOf(rel));
     }
 
     private static boolean isJava(Path rel) {
@@ -134,6 +153,11 @@ public final class SourceTreeObfuscator {
 
     public int getCopiedCount() {
         return copiedCount;
+    }
+
+    /** Excluded files whose comments were removed without obfuscation. */
+    public int getStrippedOnlyCount() {
+        return strippedOnlyCount;
     }
 
     public ClassRenamePlan getClassRenamePlan() {

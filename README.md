@@ -36,19 +36,28 @@ same goes for names used reflectively (e.g. JUnit `@MethodSource("name")`).
 
 Javadoc and comments can reveal what renaming hides: original parameter names
 (`@param divisor`), descriptions of private methods, `{@link Calculator}`.
+`stripJavadocsAndComments` removes all of them: Javadoc (`/** ... */`, `///`),
+`/* ... */` and `//` comments.
 
-* `stripJavadoc` removes Javadoc comments (`/** ... */` and `///`).
-* `stripComments` removes all comments: Javadoc, `/* ... */` and `//`.
+The comments' line breaks stay in place, so **line numbers do not change**.
+Comments before the `package` declaration, typically a license header, are
+always kept. In files without a package declaration, comments before the
+first import or type are kept.
 
-Both leave the comment's line breaks in place, so **line numbers do not
-change**. Comments before the `package` declaration, typically a license
-header, are always kept. In files without a package declaration, comments
-before the first import or type are kept. Only obfuscated files are affected;
-excluded files are copied unchanged.
+`stripScope` decides which files lose their comments:
+
+| `stripScope` | Comments removed from |
+|---|---|
+| `obfuscated` (default) | obfuscated files only |
+| `packages` | every file matching `packages`/`classes`, including files in `excludes`, which keep their identifiers |
+
+Files outside `packages`/`classes` are never touched. If neither `packages`
+nor `classes` is set, every file matches, so `packages` then applies to all
+excluded files.
 
 A `@deprecated` tag inside a removed Javadoc goes with it (the `@Deprecated`
 annotation, being code, stays). Note that `maven-javadoc-plugin` would read
-the obfuscated sources too, so generate published API docs from the original
+the processed sources too, so generate published API docs from the original
 sources.
 
 ### Package-private top-level classes (opt-in)
@@ -105,7 +114,8 @@ Requires Maven 3.9.10 or later (including Maven 4).
     <classes><class>org.other.Special</class></classes>
     <excludes><exclude>com.acme.api</exclude></excludes>      <!-- package or class -->
     <excludedIdentifiers><excludedIdentifier>handler</excludedIdentifier></excludedIdentifiers>
-    <stripJavadoc>true</stripJavadoc>                        <!-- opt-in -->
+    <stripJavadocsAndComments>true</stripJavadocsAndComments>  <!-- opt-in -->
+    <stripScope>packages</stripScope>                        <!-- or obfuscated -->
     <renamePackagePrivateClasses>true</renamePackagePrivateClasses>  <!-- opt-in -->
     <classNameExcludes>                                       <!-- class or package -->
       <classNameExclude>com.acme.plugins.LoadedByName</classNameExclude>
@@ -161,8 +171,8 @@ the rule works, run `git check-ignore -v private/ketem-identifiers-1.0.txt`.
 | `languageLevel` | `ketem.languageLevel` | from `maven.compiler.release`, else `maven.compiler.source`, else `JAVA_21` |
 | `dictionaryFile` | `ketem.dictionaryFile` | `${project.basedir}/private/ketem-identifiers-${project.version}.txt` |
 | `outputDirectory` | | `target/ketem/src` |
-| `stripJavadoc` | `ketem.stripJavadoc` | false |
-| `stripComments` | `ketem.stripComments` | false |
+| `stripJavadocsAndComments` | `ketem.stripJavadocsAndComments` | false |
+| `stripScope` | `ketem.stripScope` | `obfuscated` (or `packages`) |
 | `renamePackagePrivateClasses` | `ketem.renamePackagePrivateClasses` | false |
 | `classNameExcludes` | | none |
 | `skip` | `ketem.skip` | false |

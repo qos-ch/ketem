@@ -38,26 +38,33 @@ public final class SourceSelector {
      *             e.g. {@code com.example.Foo}, derived from its path
      */
     public boolean isSelected(String fqcn) {
-        String pkg = packageOf(fqcn);
-        boolean included = packages.isEmpty() && classes.isEmpty();
-        for (String p : packages) {
-            if (inPackage(pkg, p)) {
-                included = true;
-                break;
-            }
-        }
-        if (!included && classes.contains(fqcn)) {
-            included = true;
-        }
-        if (!included) {
+        if (!isDesignated(fqcn)) {
             return false;
         }
+        String pkg = packageOf(fqcn);
         for (String e : excludes) {
             if (fqcn.equals(e) || inPackage(pkg, e)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /**
+     * Whether {@code fqcn} matches the packages or classes, ignoring the
+     * excludes.
+     */
+    public boolean isDesignated(String fqcn) {
+        if (packages.isEmpty() && classes.isEmpty()) {
+            return true;
+        }
+        String pkg = packageOf(fqcn);
+        for (String p : packages) {
+            if (inPackage(pkg, p)) {
+                return true;
+            }
+        }
+        return classes.contains(fqcn);
     }
 
     private static boolean inPackage(String pkg, String prefix) {

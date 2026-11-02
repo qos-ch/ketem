@@ -25,6 +25,18 @@ class SourceSelectorTest {
     }
 
     @Test
+    void designatedIgnoresExcludes() {
+        SourceSelector s = new SourceSelector(List.of("com.acme"), List.of("org.x.Special"),
+                List.of("com.acme.gen", "com.acme.Keep"));
+        assertTrue(s.isDesignated("com.acme.gen.Gen"));
+        assertTrue(s.isDesignated("com.acme.Keep"));
+        assertFalse(s.isSelected("com.acme.Keep"));
+        assertTrue(s.isDesignated("org.x.Special"));
+        assertFalse(s.isDesignated("org.x.Other"));
+        assertTrue(SourceSelector.all().isDesignated("any.Thing"));
+    }
+
+    @Test
     void emptyIncludesSelectEverything() {
         SourceSelector s = new SourceSelector(null, null, List.of("x.y"));
         assertTrue(s.isSelected("a.B"));
