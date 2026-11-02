@@ -118,6 +118,17 @@ class ObfuscatorTest {
         assertTrue(out.contains("keepMe + " + hasher.obfuscate("other")), out);
     }
 
+    @Test
+    void tabsAndCrLfLineEndingsArePreserved() throws Exception {
+        String src = "package t;\r\n\r\npublic class T {\r\n\tprivate static int\tcount = 2;\r\n"
+                + "\tpublic static Object run() {\r\n\t\tint\t\tlocal = count;\r\n\t\treturn local;\r\n\t}\r\n}\r\n";
+        String out = new Obfuscator(hasher).obfuscate(src, "T.java");
+        String expected = src.replace("count", hasher.obfuscate("count")).replace("local", hasher.obfuscate("local"));
+        assertEquals(expected, out);
+        Class<?> c = InMemoryCompiler.compile("t.T", out).loadClass("t.T");
+        assertEquals(2, c.getMethod("run").invoke(null));
+    }
+
     private static Object invokeRun(String source) throws Exception {
         Class<?> c = InMemoryCompiler.compile("demo.Inventory", source).loadClass("demo.Inventory");
         return c.getMethod("run").invoke(null);

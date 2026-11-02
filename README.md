@@ -9,11 +9,12 @@ set of original identifiers is enough to reverse it.
 
 ## What gets renamed
 
-Only identifiers whose scope is a single source file:
+By default, only identifiers whose scope is a single source file:
 local variables, parameters, pattern variables, private fields and private
 methods. Public/protected API, class and package names are kept, so files are
-processed independently and dependent code keeps compiling. Formatting is kept
-as-is, so **line numbers in stack traces match the original sources**.
+processed independently and dependent code keeps compiling. Optionally,
+package-private top-level classes can be renamed too (see below). Formatting is
+kept as-is, so **line numbers in stack traces match the original sources**.
 
 Skipped on purpose:
 
@@ -30,6 +31,43 @@ anonymous class *inherits* a field or method from an external supertype that
 has the same name as a private member of the enclosing class, renaming can
 change which one is used. Add such names to `excludedIdentifiers`, and the
 same goes for names used reflectively (e.g. JUnit `@MethodSource("name")`).
+
+### Package-private top-level classes (opt-in)
+
+With `renamePackagePrivateClasses` enabled, non-public top-level classes,
+interfaces, enums and records are renamed as well, and so is their source
+file: `Calculator.java` becomes `_4f455bcf8c2e.java`, and stack traces retrace
+to `Calculator.divide(Calculator.java:11)`. Such a class is visible to every
+file in its package, so Ketem first examines the whole package and keeps a
+class name when:
+
+* it is listed in `classNameExcludes` or `excludedIdentifiers`,
+* a test source or an excluded source file in the same package mentions it
+  (those files are not rewritten, so the old name must stay valid),
+* the same name is also used in the package by a variable, parameter, enum
+  constant, nested or local type, type parameter, or an import,
+* it declares a `main` method, directly implements `Serializable` or
+  `Externalizable`, or carries a framework-style annotation.
+
+Each kept class is logged with the reason. The class's contents are still
+obfuscated either way.
+
+Class names are visible at runtime in ways Ketem cannot see. Put a class in
+`classNameExcludes` when its name matters through:
+
+* `Class.forName("...")`, `getClass().getName()`/`getSimpleName()`, or a
+  record's `toString()` output,
+* logger names, e.g. `LoggerFactory.getLogger(Calculator.class)`, so
+  class-level logging configuration no longer matches (package-level
+  configuration still does),
+* resources and configuration files: `META-INF/services`, Spring XML,
+  `logback.xml` and the like,
+* previously serialized data of classes that are serializable through a
+  superclass, e.g. exceptions,
+* the same package split across modules.
+
+Also note that test sources created after `process-sources` (e.g. generated
+in `generate-test-sources`) are not examined.
 
 ## Maven usage
 
@@ -48,6 +86,10 @@ Requires Maven 3.9.10 or later (including Maven 4).
     <classes><class>org.other.Special</class></classes>
     <excludes><exclude>com.acme.api</exclude></excludes>      <!-- package or class -->
     <excludedIdentifiers><excludedIdentifier>handler</excludedIdentifier></excludedIdentifiers>
+    <renamePackagePrivateClasses>true</renamePackagePrivateClasses>  <!-- opt-in -->
+    <classNameExcludes>                                       <!-- class or package -->
+      <classNameExclude>com.acme.plugins.LoadedByName</classNameExclude>
+    </classNameExcludes>
   </configuration>
 </plugin>
 ```
@@ -99,6 +141,8 @@ the rule works, run `git check-ignore -v private/ketem-identifiers-1.0.txt`.
 | `languageLevel` | `ketem.languageLevel` | from `maven.compiler.release`, else `maven.compiler.source`, else `JAVA_21` |
 | `dictionaryFile` | `ketem.dictionaryFile` | `${project.basedir}/private/ketem-identifiers-${project.version}.txt` |
 | `outputDirectory` | | `target/ketem/src` |
+| `renamePackagePrivateClasses` | `ketem.renamePackagePrivateClasses` | false |
+| `classNameExcludes` | | none |
 | `skip` | `ketem.skip` | false |
 
 ## Retracing stack traces

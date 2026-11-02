@@ -66,6 +66,22 @@ public class ObfuscateMojo extends AbstractMojo {
     @Parameter
     private List<String> excludes;
 
+    /**
+     * Also rename package-private top-level classes (and their source files).
+     * A class keeps its name when test sources or excluded files in its
+     * package mention it, or when it looks reflectively accessed.
+     */
+    @Parameter(property = "ketem.renamePackagePrivateClasses", defaultValue = "false")
+    private boolean renamePackagePrivateClasses;
+
+    /**
+     * Package-private classes that keep their names even when
+     * {@code renamePackagePrivateClasses} is on: fully qualified class names, or
+     * packages (including sub-packages). Their contents are still obfuscated.
+     */
+    @Parameter
+    private List<String> classNameExcludes;
+
     /** Identifiers that must never be renamed, e.g. names used reflectively. */
     @Parameter
     private List<String> excludedIdentifiers;
@@ -133,6 +149,13 @@ public class ObfuscateMojo extends AbstractMojo {
         Obfuscator obfuscator = new Obfuscator(hasher, excludedIdentifiers, level);
         SourceTreeObfuscator tree = new SourceTreeObfuscator(obfuscator,
                 new SourceSelector(packages, classes, excludes), charset);
+        if (renamePackagePrivateClasses) {
+            List<Path> testRoots = new ArrayList<>();
+            for (String r : project.getTestCompileSourceRoots()) {
+                testRoots.add(new File(r).toPath().toAbsolutePath().normalize());
+            }
+            tree.enableClassRenaming(classNameExcludes, testRoots);
+        }
         try {
             deleteRecursively(out);
             tree.process(roots, out);
@@ -148,6 +171,11 @@ public class ObfuscateMojo extends AbstractMojo {
         getLog().info("Ketem obfuscated " + tree.getObfuscatedCount() + " file(s), copied "
                 + tree.getCopiedCount() + " other file(s), renamed "
                 + obfuscator.getRenamedIdentifiers().size() + " distinct identifier(s)");
+        if (renamePackagePrivateClasses) {
+            getLog().info("Renamed " + tree.getClassRenamePlan().renamedCount() + " package-private class(es)");
+            tree.getClassRenamePlan().getSkipped().forEach(
+                    (fqcn, reason) -> getLog().info("Kept class name " + fqcn + ": " + reason));
+        }
         getLog().info("Identifier dictionary: " + dictionaryFile);
     }
 

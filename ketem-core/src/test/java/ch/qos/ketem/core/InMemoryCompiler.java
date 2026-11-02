@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.io.StringWriter;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,15 +24,21 @@ final class InMemoryCompiler {
     }
 
     static ClassLoader compile(String className, String source) {
+        return compile(Map.of(className.replace('.', '/') + ".java", source));
+    }
+
+    /** @param sources relative source path (e.g. {@code demo/Foo.java}) to source text */
+    static ClassLoader compile(Map<String, String> sources) {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         Map<String, ByteArrayOutputStream> classes = new HashMap<>();
-        JavaFileObject file = new SimpleJavaFileObject(
-                URI.create("string:///" + className.replace('.', '/') + ".java"), JavaFileObject.Kind.SOURCE) {
+        List<JavaFileObject> files = new ArrayList<>();
+        sources.forEach((path, source) -> files.add(new SimpleJavaFileObject(
+                URI.create("string:///" + path), JavaFileObject.Kind.SOURCE) {
             @Override
             public CharSequence getCharContent(boolean ignoreEncodingErrors) {
                 return source;
             }
-        };
+        }));
         JavaFileManager fm = new ForwardingJavaFileManager<JavaFileManager>(
                 compiler.getStandardFileManager(null, null, null)) {
             @Override
@@ -46,9 +53,9 @@ final class InMemoryCompiler {
             }
         };
         StringWriter errors = new StringWriter();
-        boolean ok = compiler.getTask(errors, fm, null, List.of("--release", "21", "-g"), null, List.of(file)).call();
+        boolean ok = compiler.getTask(errors, fm, null, List.of("--release", "21", "-g"), null, files).call();
         if (!ok) {
-            throw new AssertionError("Compilation of " + className + " failed:\n" + errors + "\n--- source ---\n" + source);
+            throw new AssertionError("Compilation failed:\n" + errors + "\n--- sources ---\n" + sources);
         }
         return new ClassLoader(InMemoryCompiler.class.getClassLoader()) {
             @Override

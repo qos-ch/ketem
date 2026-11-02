@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
@@ -16,10 +17,13 @@ import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ParserConfiguration.LanguageLevel;
+import com.github.javaparser.Position;
 import com.github.javaparser.Problem;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
+import com.github.javaparser.ast.PackageDeclaration;
 import com.github.javaparser.ast.body.BodyDeclaration;
 import com.github.javaparser.ast.body.CallableDeclaration;
 import com.github.javaparser.ast.body.CompactConstructorDeclaration;
@@ -39,6 +43,7 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
+import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.SimpleName;
@@ -56,7 +61,6 @@ import com.github.javaparser.ast.stmt.SwitchEntry;
 import com.github.javaparser.ast.nodeTypes.SwitchNode;
 import com.github.javaparser.ast.stmt.TryStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
-import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 
 /**
  * Obfuscates identifiers whose scope is confined to a single compilation unit:
@@ -65,8 +69,9 @@ import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinte
  * untouched, so each file can be processed independently and the rest of the
  * build (and its consumers) keeps compiling.
  *
- * <p>Formatting is preserved via JavaParser's lexical preserving printer, so
- * line numbers in stack traces still point at the original source lines.
+ * <p>The syntax tree is used for analysis only; new names are spliced into the
+ * original text, so formatting is preserved exactly and line numbers in stack
+ * traces still point at the original source lines.
  *
  * <p>Name resolution is purely syntactic (no classpath), so the obfuscator is
  * deliberately conservative: a member is renamed only when every reference to
@@ -74,6 +79,9 @@ import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinte
  * spot: a nested or anonymous class that <em>inherits</em> a field or method
  * from an external supertype with the same simple name as a private member of
  * the enclosing class. Add such names to the excluded identifiers.
+ *
+ * <p>Optionally, package-private top-level classes are renamed too; see
+ * {@link ClassRenamePlanner} for how they are chosen.
  *
  * <p>Instances accumulate the mapping across files and fail fast on a hash
  * collision, so use one instance per build.
@@ -105,7 +113,8 @@ public final class Obfuscator {
         if (excludedIdentifiers != null) {
             this.excluded.addAll(excludedIdentifiers);
         }
-        this.parser = new JavaParser(new ParserConfiguration().setLanguageLevel(languageLevel));
+        // Tab size 1 makes parser columns equal to character offsets within a line.
+        this.parser = new JavaParser(new ParserConfiguration().setLanguageLevel(languageLevel).setTabSize(1));
     }
 
     public JavaParser getParser() {
@@ -117,12 +126,25 @@ public final class Obfuscator {
         return new TreeSet<>(obfuscatedToOriginal.values());
     }
 
+    /** The obfuscated form of {@code original}, without recording it. */
+    public String obfuscatedName(String original) {
+        return hasher.obfuscate(original);
+    }
+
     /**
      * @param source   Java source text
      * @param origin   used in error messages only, e.g. a file path
      * @return the obfuscated source
      */
     public String obfuscate(String source, String origin) {
+        return obfuscate(source, origin, ClassRenamePlan.NONE);
+    }
+
+    /**
+     * @param plan package-private top-level classes to rename, computed over
+     *             the whole source tree
+     */
+    public String obfuscate(String source, String origin, ClassRenamePlan plan) {
         ParseResult<CompilationUnit> result = parser.parse(source);
         if (!result.isSuccessful() || result.getResult().isEmpty()) {
             String problems = result.getProblems().stream().map(Problem::getVerboseMessage)
@@ -130,9 +152,7 @@ public final class Obfuscator {
             throw new ObfuscationException("Failed to parse " + origin + ":\n" + problems);
         }
         CompilationUnit cu = result.getResult().get();
-        LexicalPreservingPrinter.setup(cu);
-        new Pass(cu).run();
-        return LexicalPreservingPrinter.print(cu);
+        return new Pass(cu, plan.namesFor(ClassRenamePlanner.packageOf(cu))).run(source, origin);
     }
 
     private String rename(String original) {
@@ -149,7 +169,11 @@ public final class Obfuscator {
         return excluded.contains(name);
     }
 
-    private static boolean hasSignificantAnnotation(NodeList<AnnotationExpr> annotations) {
+    boolean isExcludedIdentifier(String name) {
+        return isExcluded(name);
+    }
+
+    static boolean hasSignificantAnnotation(NodeList<AnnotationExpr> annotations) {
         for (AnnotationExpr a : annotations) {
             if (!NEUTRAL_ANNOTATIONS.contains(a.getName().getIdentifier())) {
                 return true;
@@ -167,35 +191,165 @@ public final class Obfuscator {
         return false;
     }
 
+    /**
+     * Collects identifier replacements by source position and applies them to
+     * the original text. Each replacement targets the last {@code identifier}
+     * characters of a node's range, and checks that they really spell the
+     * identifier before replacing them.
+     */
+    private final class SourceEditor {
+
+        private final String source;
+        private final String origin;
+        private final int[] lineStarts;
+        private final Map<Integer, String[]> edits = new TreeMap<>(Collections.reverseOrder());
+
+        SourceEditor(String source, String origin) {
+            this.source = source;
+            this.origin = origin;
+            List<Integer> starts = new java.util.ArrayList<>();
+            starts.add(0);
+            for (int i = 0; i < source.length(); i++) {
+                char c = source.charAt(i);
+                if (c == '\n' || (c == '\r' && (i + 1 == source.length() || source.charAt(i + 1) != '\n'))) {
+                    starts.add(i + 1);
+                }
+            }
+            lineStarts = starts.stream().mapToInt(Integer::intValue).toArray();
+        }
+
+        void replaceIdentifierAt(Node node, String identifier) {
+            Position end = node.getEnd().orElseThrow(() ->
+                    new ObfuscationException("No source position for '" + identifier + "' in " + origin));
+            int endOffset = lineStarts[end.line - 1] + end.column; // exclusive
+            int start = endOffset - identifier.length();
+            if (start < 0 || !source.startsWith(identifier, start)) {
+                throw new ObfuscationException("Cannot locate '" + identifier + "' at line " + end.line + " in "
+                        + origin + "; the file may use Unicode escapes in identifiers");
+            }
+            edits.put(start, new String[] {identifier, rename(identifier)});
+        }
+
+        String apply() {
+            StringBuilder sb = new StringBuilder(source);
+            for (Map.Entry<Integer, String[]> e : edits.entrySet()) {
+                int start = e.getKey();
+                sb.replace(start, start + e.getValue()[0].length(), e.getValue()[1]);
+            }
+            return sb.toString();
+        }
+    }
+
     /** Analysis and renaming of a single compilation unit. */
     private final class Pass {
 
         private final CompilationUnit cu;
+        private final String pkg;
+        private final Set<String> classNames;
         private final Map<String, List<TypeDeclaration<?>>> typesBySimpleName = new HashMap<>();
         private final Set<String> unsafeFieldNames = new HashSet<>();
         private final Set<String> unsafeMethodNames = new HashSet<>();
         private final Map<String, Boolean> renamableMethodNames = new HashMap<>();
         private final Set<SimpleName> toRename = Collections.newSetFromMap(new IdentityHashMap<>());
         private final Set<MethodReferenceExpr> methodRefsToRename = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Set<Name> qualifiedNamesToRename = Collections.newSetFromMap(new IdentityHashMap<>());
 
-        Pass(CompilationUnit cu) {
+        Pass(CompilationUnit cu, Set<String> classNames) {
             this.cu = cu;
+            this.pkg = ClassRenamePlanner.packageOf(cu);
+            this.classNames = classNames;
         }
 
-        void run() {
+        String run(String source, String origin) {
             for (TypeDeclaration<?> t : cu.findAll(TypeDeclaration.class)) {
                 typesBySimpleName.computeIfAbsent(t.getNameAsString(), k -> new java.util.ArrayList<>()).add(t);
             }
             collectUnsafeNames();
             collectDeclarations();
             collectUses();
-            // Mutate only after all analysis is done; resolution relies on original names.
+            collectClassRenames();
+            // The AST is never modified: new names are spliced into the original
+            // text, which preserves formatting (and thus line numbers) exactly.
+            SourceEditor editor = new SourceEditor(source, origin);
             for (SimpleName n : toRename) {
-                n.setIdentifier(rename(n.getIdentifier()));
+                editor.replaceIdentifierAt(n, n.getIdentifier());
             }
+            // For these nodes the identifier is the last token of the node's range.
             for (MethodReferenceExpr r : methodRefsToRename) {
-                r.setIdentifier(rename(r.getIdentifier()));
+                editor.replaceIdentifierAt(r, r.getIdentifier());
             }
+            for (Name n : qualifiedNamesToRename) {
+                editor.replaceIdentifierAt(n, n.getIdentifier());
+            }
+            return editor.apply();
+        }
+
+        // ------------------------------------------------- package-private classes
+
+        /**
+         * Renames the planned package-private top-level classes: declarations,
+         * constructors and every reference by simple name or by name qualified
+         * with this package. The planner has already ruled out names that are
+         * shadowed or have another meaning in the package, so a simple name
+         * matching a planned class always refers to it.
+         */
+        private void collectClassRenames() {
+            if (classNames.isEmpty()) {
+                return;
+            }
+            for (TypeDeclaration<?> t : cu.getTypes()) {
+                if (classNames.contains(t.getNameAsString())) {
+                    toRename.add(t.getName());
+                    t.getConstructors().forEach(c -> toRename.add(c.getName()));
+                    t.findAll(CompactConstructorDeclaration.class, c -> c.getParentNode().orElse(null) == t)
+                            .forEach(c -> toRename.add(c.getName()));
+                }
+            }
+            for (ClassOrInterfaceType t : cu.findAll(ClassOrInterfaceType.class)) {
+                if (classNames.contains(t.getNameAsString())
+                        && (t.getScope().isEmpty() || pkg.equals(dottedType(t.getScope().get())))) {
+                    toRename.add(t.getName());
+                }
+            }
+            for (NameExpr ne : cu.findAll(NameExpr.class)) {
+                if (classNames.contains(ne.getNameAsString())) {
+                    toRename.add(ne.getName());
+                }
+            }
+            for (FieldAccessExpr fa : cu.findAll(FieldAccessExpr.class)) {
+                if (classNames.contains(fa.getNameAsString()) && !pkg.isEmpty()
+                        && pkg.equals(dottedExpr(fa.getScope()))) {
+                    toRename.add(fa.getName());
+                }
+            }
+            // Names in imports, annotations and Outer.this / Outer.super.
+            for (Name n : cu.findAll(Name.class)) {
+                if (!classNames.contains(n.getIdentifier()) || n.findAncestor(PackageDeclaration.class).isPresent()) {
+                    continue;
+                }
+                boolean matches = n.getQualifier().isPresent()
+                        ? pkg.equals(n.getQualifier().get().asString())
+                        : n.findAncestor(ImportDeclaration.class).isEmpty();
+                if (matches) {
+                    qualifiedNamesToRename.add(n);
+                }
+            }
+        }
+
+        private String dottedType(ClassOrInterfaceType t) {
+            return t.getScope().isPresent() ? dottedType(t.getScope().get()) + "." + t.getNameAsString()
+                    : t.getNameAsString();
+        }
+
+        private String dottedExpr(Expression e) {
+            if (e instanceof NameExpr) {
+                return ((NameExpr) e).getNameAsString();
+            }
+            if (e instanceof FieldAccessExpr) {
+                String scope = dottedExpr(((FieldAccessExpr) e).getScope());
+                return scope == null ? null : scope + "." + ((FieldAccessExpr) e).getNameAsString();
+            }
+            return null;
         }
 
         // ---------------------------------------------------------------- analysis
